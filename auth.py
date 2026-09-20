@@ -1,80 +1,70 @@
-from passlib.context import CryptContext        #  passilb.context is imported from cryptcontext  used to create verify and hash password 
-
-from jose import JWTError , jwt # JOSE IS USED FOR TOKENS AND JWT IS USED TO ENCODE AND DECODE TOKENES
-
-
-
-from datetime import timedelta,timezone,datetime
-from fastapi import Depends, HTTPException, status
-
-from fastapi.security import OAuth2PasswordBearer
+from fastapi import APIRouter, Depends, HTTPException ,status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from .database import get_db
-from .models import User
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
-pwd_context = CryptContext(
-    schemes=["bcrypt"],
-    deprecated = "auto"
-)
-
-SECRET_KEY = "my_secret_key"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_MINUTE = 30
-
-def hash_password(plain_password : str):
-   return  pwd_context.hash(plain_password)
-
-def verify_password( plain_password:str , hashed_password):
-   return pwd_context.verify(plain_password,hashed_password)
-
-def create_access_token(data:dict):
-   to_encode = data.copy()
-
-   #expire = datetime.now(timedelta.utc) + timedelta(ACCESS_TOKEN_MINUTE)
-   expire = datetime.now(timezone.utc) + timedelta(
-    minutes=ACCESS_TOKEN_MINUTE
-)
-
-   to_encode.update({"exp":expire})
-
-   encoded_jwt = jwt.encode(
-        to_encode,
-        SECRET_KEY,
-        algorithm=   ALGORITHM,
-   )
-
-   return encoded_jwt
+from ..database import get_db
+from ..models import User
+from ..auth import verify_password, create_access_token , hash_password
+from ..schemas import User_Response ,UserCreate , UserLogin , TokenResponse 
 
 
-def get_current_user(token:str = Depends(oauth2_scheme),db:Session=Depends(get_db)):
-    try:
-        payload = jwt.decode(token,SECRET_KEY,algorithms=[ALGORITHM])
+router = APIRouter(prefix="/auth")
 
-        token_id = payload.get("sub")
-        if token_id is None:
-           raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                 detail="Invalid token"
-            )
-        user = db.query(User).filter(User.user_id == int(token_id)).first()
-        if user is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found"
-            )
+@router.post("/register",response_model=User_Response)
+def register(data:UserCreate,db:Session= Depends(get_db)):
     
-        return user
+    hashed_password = hash_password(data.user_password)
+    user = User(
+    user_name=data.user_name,
+    user_email=data.user_email,
+    user_address=data.user_address,
+    is_address=data.is_address,
+    phone_number=data.phone_number,
+    user_password = hashed_password
+)
 
-    except JWTError:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or expired token"
-            )
+    check = db.query(User).filter(User.user_email== data.user_email).first()
+    if check  :
+         raise HTTPException(
+        status_code=400,
+        detail="Email already registered"
+    )
+    
+    
+    db.add(user)
+
+    
+    db.commit()
+
+    db.refresh(user)
+
+    return user
 
 
+@router.post("/login",response_model=TokenResponse)
 
+def login(data:UserLogin ,db:Session = Depends(get_db)):
+     
+    user = db.query(User).filter(
+    User.user_email == data.user_email
+).first()
+    if not user:
+        raise HTTPException(
+        status_code=401,
+        detail="Invalid email or password"
+    )
 
+    if not verify_password(data.user_password,user.user_password):
+          raise HTTPException(
+        status_code=401,
+        detail="Invalid email or password"
+    )
 
+    token = create_access_token(  
+         data={"sub": str(user.user_id)}
+)
 
-       
+    return {
+    "access_token": token,
+    "token_type": "bearer"
+}
